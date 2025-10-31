@@ -1,4 +1,4 @@
-# 🌌 완성형: 전세계 게임 데이터 분석 (네온 게이밍 테마 ver.2)
+# 🌌 전세계 게임 데이터 분석 (네온 게이밍 테마 ver.3)
 # author: GPT-5
 
 import streamlit as st
@@ -8,7 +8,7 @@ import plotly.express as px
 # ✅ 페이지 설정
 st.set_page_config(page_title="🎮 전세계 게임 데이터 분석 🎮", layout="wide")
 
-# -------------------- 🎨 고급 네온 테마 스타일 --------------------
+# -------------------- 🎨 네온 테마 스타일 --------------------
 neon_style = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Do+Hyeon&family=Russo+One&family=Press+Start+2P&display=swap');
@@ -19,11 +19,30 @@ html, body, [data-testid="stAppViewContainer"] {
     font-family: 'Do Hyeon', sans-serif;
 }
 
-/* 사이드바 */
+/* 🟦 사이드바 스타일 */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, rgba(10,10,40,0.95), rgba(30,10,50,0.95));
+    background: linear-gradient(180deg, rgba(5,10,35,0.95), rgba(20,0,50,0.95));
     border-right: 2px solid rgba(0,255,255,0.3);
     box-shadow: 0 0 15px rgba(0, 200, 255, 0.3);
+}
+[data-testid="stSidebar"] * {
+    color: #00eaff !important;  /* 사이드바 글씨 색상 */
+    font-weight: 600;
+}
+[data-baseweb="select"] > div {
+    background-color: rgba(15, 15, 40, 0.8) !important;
+    color: white !important;
+    border-radius: 8px !important;
+    border: 1px solid rgba(0,255,255,0.4) !important;
+}
+[data-baseweb="input"] input {
+    color: white !important;
+}
+.css-1y4p8pa, .css-qrbaxs, .css-10trblm, .css-1dp5vir {
+    color: #00ffff !important;
+}
+.stSlider > div > div > div > div {
+    background: linear-gradient(90deg, #00ffff, #7f00ff) !important;
 }
 
 /* 제목 */
@@ -45,17 +64,6 @@ h2 {
     font-family: 'Russo One', sans-serif;
     text-shadow: 0 0 8px #00eaff, 0 0 20px #0077ff;
     margin-top: 40px;
-}
-
-/* 일반 텍스트 */
-p, label, span, div {
-    color: #e4f7ff !important;
-}
-a {
-    color: #00eaff !important;
-}
-a:hover {
-    color: #ff66ff !important;
 }
 
 /* 버튼 */
@@ -83,7 +91,7 @@ a:hover {
     box-shadow: 0 0 20px rgba(0,200,255,0.2);
 }
 
-/* 애니메이션 배경 */
+/* 배경 애니메이션 */
 @keyframes glow {
     0% { background-position: 0% 50%; }
     50% { background-position: 100% 50%; }
@@ -150,7 +158,7 @@ df_filtered = df_filtered[(df_filtered['User Rating'] >= rating_range[0]) & (df_
 st.markdown("<h1>🎮 전세계 게임 데이터 분석 🎮</h1>", unsafe_allow_html=True)
 st.markdown("<hr style='border: 1px solid rgba(0,255,255,0.4);'/>", unsafe_allow_html=True)
 
-# -------------------- 요약 메트릭 --------------------
+# -------------------- 요약 --------------------
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("총 게임 수", f"{len(df_filtered):,}")
 col2.metric("평균 평점", f"{df_filtered['User Rating'].mean():.2f}")
