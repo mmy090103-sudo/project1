@@ -1,226 +1,142 @@
 # streamlit_games_visualization.py
-# Streamlit app to visualize games_dataset.csv using Plotly (high-quality, feature-rich)
-# How to use:
-# 1) Save this file as streamlit_app.py (or keep the name).
-# 2) Place games_dataset.csv in the same folder or upload it via the sidebar upload widget.
-# 3) Run: streamlit run streamlit_games_visualization.py
-#
-# This file is intended for GitHub. Commit it and create a Streamlit app from the repo.
+# 고급 버전: 한글 UI + 보기 좋은 스타일 + 다양한 Plotly 시각화 + 인터랙티브 기능
+# 실행방법:
+# 1) games_dataset.csv 파일을 동일 폴더에 두세요.
+# 2) 터미널에서: streamlit run streamlit_games_visualization.py
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from io import StringIO
 
-st.set_page_config(page_title="Games Dataset Explorer", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="🎮 게임 데이터 시각화 대시보드", layout="wide")
 
-# -------------------- Helpers & Caching --------------------
-@st.cache_data(show_spinner=False)
-def load_data(path=None, uploaded_file=None):
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_csv(path) if path is not None else pd.DataFrame()
-    # Normalize column names for convenience
-    df = df.rename(columns=lambda s: s.strip())
-    # Ensure types
-    if 'Release Year' in df.columns:
-        df['Release Year'] = pd.to_numeric(df['Release Year'], errors='coerce').astype('Int64')
-    if 'User Rating' in df.columns:
-        df['User Rating'] = pd.to_numeric(df['User Rating'], errors='coerce')
+# -------------------- 사용자 정의 CSS (배경, 폰트, 색상) --------------------
+page_bg = """
+<style>
+[data-testid="stAppViewContainer"] {
+    background-color: #f6f7fb;
+}
+[data-testid="stSidebar"] {
+    background-color: #f0f2f6;
+}
+h1, h2, h3, h4, h5, h6 {
+    color: #1e1e1e;
+}
+p, span, label, div {
+    font-family: 'Pretendard', sans-serif;
+}
+</style>
+"""
+st.markdown(page_bg, unsafe_allow_html=True)
+
+# -------------------- 데이터 불러오기 --------------------
+@st.cache_data(show_spinner=True)
+def load_data(path: str):
+    df = pd.read_csv(path)
+    df = df.rename(columns=lambda x: x.strip())
     return df
 
-# -------------------- Load dataset --------------------
-DEFAULT_PATH = "./games_dataset.csv"
-uploaded = st.sidebar.file_uploader("Upload a CSV file (optional)", type=["csv"]) 
-
-# Load default if upload not provided
-df = load_data(path=DEFAULT_PATH, uploaded_file=uploaded)
-
-if df.empty:
-    st.sidebar.warning("No data loaded. Upload a CSV or place games_dataset.csv in the app folder.")
+try:
+    df = load_data("games_dataset.csv")
+except FileNotFoundError:
+    st.error("❌ 'games_dataset.csv' 파일이 폴더에 없습니다. 업로드하거나 경로를 확인하세요.")
     st.stop()
 
-# -------------------- Sidebar Filters --------------------
-st.sidebar.header("Filters & Settings")
-with st.sidebar.expander("Column selection / tidy up", expanded=False):
-    cols = df.columns.tolist()
-    chosen_cols = st.multiselect("Columns to include in analysis", cols, default=cols)
-    df = df[chosen_cols]
+# -------------------- 사이드바 --------------------
+st.sidebar.title("🎮 필터 설정")
 
-# Quick checks and derived columns
-if 'Release Year' not in df.columns:
-    st.error("This app expects a 'Release Year' column. Please include it or map your year column.")
-    st.stop()
+# 기본 필터
+years = sorted(df['Release Year'].dropna().unique())
+year_min, year_max = st.sidebar.select_slider(
+    '출시 연도 범위 선택',
+    options=years,
+    value=(min(years), max(years))
+)
 
-if 'User Rating' not in df.columns:
-    st.warning("No 'User Rating' column found. Some visualizations that depend on ratings will be hidden.")
+selected_genres = st.sidebar.multiselect(
+    '장르 선택', ['전체'] + sorted(df['Genre'].dropna().unique()), default=['전체']
+)
+selected_platforms = st.sidebar.multiselect(
+    '플랫폼 선택', ['전체'] + sorted(df['Platform'].dropna().unique()), default=['전체']
+)
 
-# Filters
-years = df['Release Year'].dropna().astype(int)
-ymin, ymax = int(years.min()), int(years.max())
-year_range = st.sidebar.slider("Release Year range", ymin, ymax, (ymin, ymax), step=1)
+rating_min, rating_max = st.sidebar.slider(
+    '사용자 평점 범위', float(df['User Rating'].min()), float(df['User Rating'].max()), (float(df['User Rating'].min()), float(df['User Rating'].max()))
+)
 
-if 'Genre' in df.columns:
-    genres = ['All'] + sorted(df['Genre'].dropna().unique().tolist())
-    selected_genres = st.sidebar.multiselect("Genre (multi-select)", genres, default=['All'])
-else:
-    selected_genres = ['All']
-
-if 'Platform' in df.columns:
-    platforms = ['All'] + sorted(df['Platform'].dropna().unique().tolist())
-    selected_platforms = st.sidebar.multiselect("Platform (multi-select)", platforms, default=['All'])
-else:
-    selected_platforms = ['All']
-
-# rating filter
-if 'User Rating' in df.columns:
-    rmin = float(np.nanmin(df['User Rating']))
-    rmax = float(np.nanmax(df['User Rating']))
-    rating_range = st.sidebar.slider("User Rating range", float(rmin), float(rmax), (float(rmin), float(rmax)))
-else:
-    rating_range = None
-
-# display options
-st.sidebar.markdown("---")
-show_top_k = st.sidebar.number_input("Show top K items in lists", min_value=5, max_value=100, value=10)
-log_scale = st.sidebar.checkbox("Use log scale for counts", value=False)
-
-# -------------------- Data filtering --------------------
-df_filtered = df.copy()
-# year
-df_filtered = df_filtered[(df_filtered['Release Year'] >= year_range[0]) & (df_filtered['Release Year'] <= year_range[1])]
-# genre
-if 'Genre' in df_filtered.columns and 'All' not in selected_genres:
+# 데이터 필터링
+df_filtered = df[(df['Release Year'] >= year_min) & (df['Release Year'] <= year_max)]
+if '전체' not in selected_genres:
     df_filtered = df_filtered[df_filtered['Genre'].isin(selected_genres)]
-# platform
-if 'Platform' in df_filtered.columns and 'All' not in selected_platforms:
+if '전체' not in selected_platforms:
     df_filtered = df_filtered[df_filtered['Platform'].isin(selected_platforms)]
-# rating
-if rating_range is not None:
-    df_filtered = df_filtered[(df_filtered['User Rating'] >= rating_range[0]) & (df_filtered['User Rating'] <= rating_range[1])]
+df_filtered = df_filtered[(df_filtered['User Rating'] >= rating_min) & (df_filtered['User Rating'] <= rating_max)]
 
-# -------------------- Main layout --------------------
-st.title("🎮 Games Dataset Explorer")
-st.markdown("Interactive, production-grade Streamlit app using Plotly for visuals.\nUse the sidebar to filter data and the controls above charts to tune visuals.")
+# -------------------- 제목 및 요약 --------------------
+st.title("🎮 게임 데이터 시각화 대시보드")
+st.caption("Plotly 기반 인터랙티브 시각화 / Streamlit 고급 버전")
 
-# Key metrics
-col1, col2, col3, col4 = st.columns([1,1,1,1])
-with col1:
-    st.metric("Total games", f"{len(df_filtered):,}", delta=f"{len(df_filtered)-len(df):,}" )
-with col2:
-    if 'User Rating' in df_filtered.columns:
-        st.metric("Avg. user rating", f"{df_filtered['User Rating'].mean():.2f}")
-    else:
-        st.metric("Avg. user rating", "N/A")
-with col3:
-    st.metric("Year range", f"{df_filtered['Release Year'].min()} — {df_filtered['Release Year'].max()}")
-with col4:
-    if 'Genre' in df_filtered.columns:
-        st.metric("Unique genres", f"{df_filtered['Genre'].nunique()}")
-    else:
-        st.metric("Unique genres", "N/A")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("게임 수", f"{len(df_filtered):,}")
+col2.metric("평균 평점", f"{df_filtered['User Rating'].mean():.2f}")
+col3.metric("출시 연도 범위", f"{df_filtered['Release Year'].min()} - {df_filtered['Release Year'].max()}")
+col4.metric("고유 장르 수", f"{df_filtered['Genre'].nunique()}")
 
 st.markdown("---")
 
-# -------------------- Charts: top row --------------------
-chart1, chart2 = st.columns([1.2, 1])
+# -------------------- 시각화 섹션 --------------------
 
-with chart1:
-    st.subheader("Ratings distribution")
-    if 'User Rating' in df_filtered.columns:
-        fig_hist = px.histogram(df_filtered, x='User Rating', nbins=30, marginal='box', hover_data=df_filtered.columns, labels={'User Rating':'User Rating'}, title='Distribution of User Ratings')
-        fig_hist.update_layout(margin=dict(t=40,l=20,r=20,b=20))
-        st.plotly_chart(fig_hist, use_container_width=True)
-    else:
-        st.info("User Rating column not available for this chart.")
+# 1️⃣ 사용자 평점 분포
+st.subheader("📊 사용자 평점 분포")
+fig_hist = px.histogram(df_filtered, x='User Rating', nbins=30, color='Genre', marginal='box', title='사용자 평점 히스토그램', hover_data=['Game Name', 'Platform'])
+st.plotly_chart(fig_hist, use_container_width=True)
 
-with chart2:
-    st.subheader("Games per Year")
-    count_by_year = df_filtered.groupby('Release Year').size().reset_index(name='count')
-    if log_scale:
-        fig_line = px.line(count_by_year, x='Release Year', y='count', markers=True, title='Games released per year (log scale)')
-        fig_line.update_yaxes(type='log')
-    else:
-        fig_line = px.bar(count_by_year, x='Release Year', y='count', title='Games released per year')
-    fig_line.update_layout(margin=dict(t=40,l=20,r=20,b=20))
-    st.plotly_chart(fig_line, use_container_width=True)
+# 2️⃣ 연도별 게임 출시 추이
+st.subheader("📈 연도별 게임 출시 수")
+count_by_year = df_filtered.groupby('Release Year').size().reset_index(name='출시 수')
+fig_bar = px.bar(count_by_year, x='Release Year', y='출시 수', text='출시 수', title='연도별 출시된 게임 수', color='출시 수', color_continuous_scale='Blues')
+fig_bar.update_traces(textposition='outside')
+st.plotly_chart(fig_bar, use_container_width=True)
 
-st.markdown("---")
+# 3️⃣ 장르별 평균 평점
+st.subheader("⭐ 장르별 평균 평점")
+avg_rating = df_filtered.groupby('Genre')['User Rating'].mean().reset_index().sort_values(by='User Rating', ascending=False)
+fig_avg = px.bar(avg_rating, x='User Rating', y='Genre', orientation='h', title='장르별 평균 사용자 평점', color='User Rating', color_continuous_scale='Viridis')
+st.plotly_chart(fig_avg, use_container_width=True)
 
-# -------------------- Charts: middle row --------------------
-mid1, mid2 = st.columns([1,1])
-
-with mid1:
-    st.subheader("Rating vs Release Year (scatter)")
-    if 'User Rating' in df_filtered.columns:
-        # jitter release year slightly for better spread
-        df_plot = df_filtered.copy()
-        df_plot['year_jitter'] = df_plot['Release Year'] + np.random.normal(0, 0.18, size=len(df_plot))
-        color_col = 'Genre' if 'Genre' in df_plot.columns else None
-        fig_scatter = px.scatter(df_plot, x='year_jitter', y='User Rating', color=color_col, hover_data=['Game Name','Platform','Release Year'], labels={'year_jitter':'Release Year'}, title='User Rating by Release Year')
-        fig_scatter.update_layout(showlegend=True, margin=dict(t=40,l=20,r=20,b=20))
-        st.plotly_chart(fig_scatter, use_container_width=True)
-    else:
-        st.info("User Rating column not available for this chart.")
-
-with mid2:
-    st.subheader("Top genres & platforms")
-    cols_to_count = []
-    if 'Genre' in df_filtered.columns:
-        top_genres = df_filtered['Genre'].value_counts().nlargest(show_top_k).reset_index()
-        top_genres.columns = ['Genre','count']
-        fig_gen = px.bar(top_genres, x='count', y='Genre', orientation='h', title=f'Top {show_top_k} Genres', hover_data=['count'])
-        st.plotly_chart(fig_gen, use_container_width=True)
-    if 'Platform' in df_filtered.columns:
-        top_plats = df_filtered['Platform'].value_counts().nlargest(show_top_k).reset_index()
-        top_plats.columns = ['Platform','count']
-        fig_plat = px.bar(top_plats, x='count', y='Platform', orientation='h', title=f'Top {show_top_k} Platforms', hover_data=['count'])
-        st.plotly_chart(fig_plat, use_container_width=True)
-
-st.markdown("---")
-
-# -------------------- Sunburst / Treemap --------------------
-st.subheader("Genre → Platform breakdown (Sunburst)")
+# 4️⃣ 장르 - 플랫폼 트리맵
+st.subheader("🌳 장르와 플랫폼 관계 (트리맵)")
 if 'Genre' in df_filtered.columns and 'Platform' in df_filtered.columns:
-    sun = df_filtered.groupby(['Genre','Platform']).size().reset_index(name='count')
-    fig_sun = px.sunburst(sun, path=['Genre','Platform'], values='count', title='Genre → Platform distribution')
-    st.plotly_chart(fig_sun, use_container_width=True)
-else:
-    st.info("Need both Genre and Platform columns for Sunburst.")
+    tree_data = df_filtered.groupby(['Genre', 'Platform']).size().reset_index(name='count')
+    fig_tree = px.treemap(tree_data, path=['Genre', 'Platform'], values='count', color='count', color_continuous_scale='Aggrnyl', title='장르별 플랫폼 분포')
+    st.plotly_chart(fig_tree, use_container_width=True)
 
+# 5️⃣ 산점도 (평점 vs 출시년도)
+st.subheader("🎯 평점과 출시년도 관계")
+fig_scatter = px.scatter(df_filtered, x='Release Year', y='User Rating', color='Genre', hover_data=['Game Name', 'Platform'], trendline='ols', title='출시년도에 따른 평점 분포')
+st.plotly_chart(fig_scatter, use_container_width=True)
+
+# 6️⃣ 플랫폼별 평균 평점
+st.subheader("🕹️ 플랫폼별 평균 평점")
+platform_rating = df_filtered.groupby('Platform')['User Rating'].mean().reset_index().sort_values(by='User Rating', ascending=False)
+fig_platform = px.bar(platform_rating, x='Platform', y='User Rating', title='플랫폼별 평균 평점', color='User Rating', color_continuous_scale='RdYlGn')
+st.plotly_chart(fig_platform, use_container_width=True)
+
+# -------------------- 데이터 미리보기 및 다운로드 --------------------
 st.markdown("---")
+st.subheader("📋 필터링된 데이터 미리보기")
+st.dataframe(df_filtered)
 
-# -------------------- Table & Detail panel --------------------
-st.subheader("Data table & game detail")
-with st.expander("Filtered data (preview)", expanded=True):
-    st.dataframe(df_filtered.reset_index(drop=True))
-
-# Row selection by game name
-game_to_inspect = st.selectbox("Select a game to inspect (by name)", options=['(none)'] + sorted(df_filtered['Game Name'].dropna().unique().tolist()))
-if game_to_inspect and game_to_inspect != '(none)':
-    row = df_filtered[df_filtered['Game Name'] == game_to_inspect].iloc[0]
-    st.markdown(f"**{row.get('Game Name','-')}**  ")
-    st.write(row.to_frame().T)
-
-# Download filtered dataset
 csv = df_filtered.to_csv(index=False)
-st.download_button("Download filtered data as CSV", data=csv, file_name="games_filtered.csv", mime='text/csv')
+st.download_button(
+    label="💾 CSV 파일로 다운로드",
+    data=csv,
+    file_name='filtered_games.csv',
+    mime='text/csv'
+)
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("Made with ❤️ by Streamlit + Plotly. Customize on GitHub.")
-
-# -------------------- Footer: tips for customization --------------------
-with st.expander("Developer tips & customization (for GitHub)"):
-    st.markdown(
-        """
-        - To publish: push this file + games_dataset.csv to a GitHub repo and connect the repo to Streamlit Cloud (app will run automatically).
-        - Add additional columns (Sales, Critic Score, Publisher) to unlock more visualizations (maps, correlation matrix, regression lines).
-        - Consider adding caching for heavy transforms and using `st.session_state` for complex interactions.
-        - This app uses Plotly for interactive visuals; you can add `plotly.graph_objects` traces to compose more advanced figures.
-        """
-    )
-
-# End of file
+# -------------------- 푸터 --------------------
+st.markdown("---")
+st.caption("Made with ❤️ by Streamlit + Plotly | 데이터 분석 연습용 예제입니다.")
