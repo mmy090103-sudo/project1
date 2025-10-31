@@ -1,228 +1,226 @@
-# app.py
+# streamlit_games_visualization.py
+# Streamlit app to visualize games_dataset.csv using Plotly (high-quality, feature-rich)
+# How to use:
+# 1) Save this file as streamlit_app.py (or keep the name).
+# 2) Place games_dataset.csv in the same folder or upload it via the sidebar upload widget.
+# 3) Run: streamlit run streamlit_games_visualization.py
+#
+# This file is intended for GitHub. Commit it and create a Streamlit app from the repo.
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.neighbors import NearestNeighbors
+from io import StringIO
 
-st.set_page_config(page_title="🎮 Global Games Dashboard", page_icon="🎯", layout="wide")
-st.title("🎮 Games Dataset — Interactive Analytics (Plotly + Streamlit)")
+st.set_page_config(page_title="Games Dataset Explorer", layout="wide", initial_sidebar_state="expanded")
 
-# -------------------------
-# Helpers: load & clean data
-# -------------------------
-@st.cache_data
-def load_csv_try_encodings(path):
-    encs = ["utf-8", "cp949", "euc-kr", "latin1"]
-    for e in encs:
-        try:
-            df = pd.read_csv(path, encoding=e)
-            return df, e
-        except Exception:
-            continue
-    raise ValueError("Cannot read CSV with common encodings.")
-
-def clean_games_df(df: pd.DataFrame) -> pd.DataFrame:
-    # normalize column names
-    df = df.rename(columns=lambda c: c.strip())
-    # required cols: Game Name, Genre, Platform, Release Year, User Rating
-    for c in ["Game Name", "Genre", "Platform", "Release Year", "User Rating"]:
-        if c not in df.columns:
-            df[c] = np.nan
-
-    # trim strings
-    df["Game Name"] = df["Game Name"].astype(str).str.strip()
-    df["Genre"] = df["Genre"].astype(str).str.strip()
-    df["Platform"] = df["Platform"].astype(str).str.strip()
-
-    # numeric conversions
-    df["Release Year"] = pd.to_numeric(df["Release Year"], errors="coerce").astype("Int64")
-    df["User Rating"] = pd.to_numeric(df["User Rating"], errors="coerce")
-
-    # drop rows without game name
-    df = df[~df["Game Name"].isna() & (df["Game Name"] != "nan")].copy()
-    # reset index
-    df = df.reset_index(drop=True)
+# -------------------- Helpers & Caching --------------------
+@st.cache_data(show_spinner=False)
+def load_data(path=None, uploaded_file=None):
+    if uploaded_file is not None:
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_csv(path) if path is not None else pd.DataFrame()
+    # Normalize column names for convenience
+    df = df.rename(columns=lambda s: s.strip())
+    # Ensure types
+    if 'Release Year' in df.columns:
+        df['Release Year'] = pd.to_numeric(df['Release Year'], errors='coerce').astype('Int64')
+    if 'User Rating' in df.columns:
+        df['User Rating'] = pd.to_numeric(df['User Rating'], errors='coerce')
     return df
 
-# Load dataset (local uploaded file path)
-DATA_PATH = "games_dataset.csv"  # replace if you change filename
-df_raw, used_encoding = load_csv_try_encodings(DATA_PATH)
-df = clean_games_df(df_raw)
+# -------------------- Load dataset --------------------
+DEFAULT_PATH = "./games_dataset.csv"
+uploaded = st.sidebar.file_uploader("Upload a CSV file (optional)", type=["csv"]) 
 
-# -------------------------
-# Sidebar: filters & controls
-# -------------------------
-st.sidebar.header("🔎 Filters & Controls")
+# Load default if upload not provided
+df = load_data(path=DEFAULT_PATH, uploaded_file=uploaded)
 
-# platform & genre lists
-platforms = sorted(df["Platform"].dropna().unique().tolist())
-genres = sorted(df["Genre"].dropna().unique().tolist())
-years = df["Release Year"].dropna().astype(int)
-year_min, year_max = int(years.min()) if not years.empty else 2000, int(years.max()) if not years.empty else 2024
+if df.empty:
+    st.sidebar.warning("No data loaded. Upload a CSV or place games_dataset.csv in the app folder.")
+    st.stop()
 
-sel_platforms = st.sidebar.multiselect("Platforms", options=platforms, default=platforms[:6])
-sel_genres = st.sidebar.multiselect("Genres", options=genres, default=genres[:6])
-sel_year_range = st.sidebar.slider("Release Year range", min_value=year_min, max_value=year_max,
-                                   value=(year_min, year_max), step=1)
-rating_min, rating_max = float(np.nanmin(df["User Rating"])), float(np.nanmax(df["User Rating"]))
-sel_rating = st.sidebar.slider("User Rating range", min_value=round(rating_min,2), max_value=round(rating_max,2),
-                               value=(round(rating_min,2), round(rating_max,2)), step=0.1)
+# -------------------- Sidebar Filters --------------------
+st.sidebar.header("Filters & Settings")
+with st.sidebar.expander("Column selection / tidy up", expanded=False):
+    cols = df.columns.tolist()
+    chosen_cols = st.multiselect("Columns to include in analysis", cols, default=cols)
+    df = df[chosen_cols]
 
-top_n = st.sidebar.slider("Top N games (by rating)", min_value=5, max_value=100, value=20, step=5)
+# Quick checks and derived columns
+if 'Release Year' not in df.columns:
+    st.error("This app expects a 'Release Year' column. Please include it or map your year column.")
+    st.stop()
 
+if 'User Rating' not in df.columns:
+    st.warning("No 'User Rating' column found. Some visualizations that depend on ratings will be hidden.")
+
+# Filters
+years = df['Release Year'].dropna().astype(int)
+ymin, ymax = int(years.min()), int(years.max())
+year_range = st.sidebar.slider("Release Year range", ymin, ymax, (ymin, ymax), step=1)
+
+if 'Genre' in df.columns:
+    genres = ['All'] + sorted(df['Genre'].dropna().unique().tolist())
+    selected_genres = st.sidebar.multiselect("Genre (multi-select)", genres, default=['All'])
+else:
+    selected_genres = ['All']
+
+if 'Platform' in df.columns:
+    platforms = ['All'] + sorted(df['Platform'].dropna().unique().tolist())
+    selected_platforms = st.sidebar.multiselect("Platform (multi-select)", platforms, default=['All'])
+else:
+    selected_platforms = ['All']
+
+# rating filter
+if 'User Rating' in df.columns:
+    rmin = float(np.nanmin(df['User Rating']))
+    rmax = float(np.nanmax(df['User Rating']))
+    rating_range = st.sidebar.slider("User Rating range", float(rmin), float(rmax), (float(rmin), float(rmax)))
+else:
+    rating_range = None
+
+# display options
 st.sidebar.markdown("---")
-st.sidebar.write(f"CSV encoding detected: **{used_encoding}**")
-st.sidebar.caption("Dataset columns: " + ", ".join(df.columns.tolist()))
-st.sidebar.markdown("⚙️ App by ChatGPT — customize further in code")
+show_top_k = st.sidebar.number_input("Show top K items in lists", min_value=5, max_value=100, value=10)
+log_scale = st.sidebar.checkbox("Use log scale for counts", value=False)
 
-# -------------------------
-# Apply filters
-# -------------------------
-mask = (
-    df["Platform"].isin(sel_platforms) &
-    df["Genre"].isin(sel_genres) &
-    (df["Release Year"].fillna(0).astype(int) >= sel_year_range[0]) &
-    (df["Release Year"].fillna(9999).astype(int) <= sel_year_range[1]) &
-    (df["User Rating"].between(sel_rating[0], sel_rating[1], inclusive="both"))
-)
-filtered = df[mask].copy()
+# -------------------- Data filtering --------------------
+df_filtered = df.copy()
+# year
+df_filtered = df_filtered[(df_filtered['Release Year'] >= year_range[0]) & (df_filtered['Release Year'] <= year_range[1])]
+# genre
+if 'Genre' in df_filtered.columns and 'All' not in selected_genres:
+    df_filtered = df_filtered[df_filtered['Genre'].isin(selected_genres)]
+# platform
+if 'Platform' in df_filtered.columns and 'All' not in selected_platforms:
+    df_filtered = df_filtered[df_filtered['Platform'].isin(selected_platforms)]
+# rating
+if rating_range is not None:
+    df_filtered = df_filtered[(df_filtered['User Rating'] >= rating_range[0]) & (df_filtered['User Rating'] <= rating_range[1])]
 
-# -------------------------
-# Top KPI row
-# -------------------------
-st.markdown("## Key metrics")
-col1, col2, col3, col4 = st.columns([1.2,1.2,1.2,1.2])
-col1.metric("🎮 Dataset rows (filtered)", f"{len(filtered):,}")
-col2.metric("🏷️ Unique Games", f"{filtered['Game Name'].nunique():,}")
-col3.metric("⭐ Avg User Rating", f"{filtered['User Rating'].mean():.2f}")
-col4.metric("📅 Year range", f"{int(filtered['Release Year'].min()) if filtered['Release Year'].notna().any() else '-'} — {int(filtered['Release Year'].max()) if filtered['Release Year'].notna().any() else '-'}")
+# -------------------- Main layout --------------------
+st.title("🎮 Games Dataset Explorer")
+st.markdown("Interactive, production-grade Streamlit app using Plotly for visuals.\nUse the sidebar to filter data and the controls above charts to tune visuals.")
+
+# Key metrics
+col1, col2, col3, col4 = st.columns([1,1,1,1])
+with col1:
+    st.metric("Total games", f"{len(df_filtered):,}", delta=f"{len(df_filtered)-len(df):,}" )
+with col2:
+    if 'User Rating' in df_filtered.columns:
+        st.metric("Avg. user rating", f"{df_filtered['User Rating'].mean():.2f}")
+    else:
+        st.metric("Avg. user rating", "N/A")
+with col3:
+    st.metric("Year range", f"{df_filtered['Release Year'].min()} — {df_filtered['Release Year'].max()}")
+with col4:
+    if 'Genre' in df_filtered.columns:
+        st.metric("Unique genres", f"{df_filtered['Genre'].nunique()}")
+    else:
+        st.metric("Unique genres", "N/A")
 
 st.markdown("---")
 
-# -------------------------
-# Top-N by rating bar chart
-# -------------------------
-st.subheader(f"Top {top_n} Games by User Rating")
-top_df = filtered.sort_values(by="User Rating", ascending=False).head(top_n).copy()
-if top_df.empty:
-    st.info("No data after filters — adjust filters to see results.")
-else:
-    # show rank, rating, year, platform
-    top_df["Rank"] = range(1, len(top_df)+1)
-    fig_top = px.bar(top_df[::-1],  # invert for horizontal descending
-                     x="User Rating", y="Game Name",
-                     orientation="h",
-                     color="Platform",
-                     hover_data=["Genre", "Platform", "Release Year", "User Rating"],
-                     height=40*min(top_n,30))
-    fig_top.update_layout(template="plotly_white", xaxis_title="User Rating", yaxis_title="")
-    st.plotly_chart(fig_top, use_container_width=True)
+# -------------------- Charts: top row --------------------
+chart1, chart2 = st.columns([1.2, 1])
 
-    # Show detail for clicked (interactive selection is limited in streamlit; add selection dropdown)
-    sel_game = st.selectbox("🔎 Show details for", options=["(none)"] + top_df["Game Name"].tolist())
-    if sel_game != "(none)":
-        row = top_df[top_df["Game Name"] == sel_game].iloc[0]
-        st.markdown(f"**{row['Game Name']}**  —  {row['Platform']} / {row['Genre']} / {row['Release Year']}")
-        st.metric("User Rating", f"{row['User Rating']:.2f}")
+with chart1:
+    st.subheader("Ratings distribution")
+    if 'User Rating' in df_filtered.columns:
+        fig_hist = px.histogram(df_filtered, x='User Rating', nbins=30, marginal='box', hover_data=df_filtered.columns, labels={'User Rating':'User Rating'}, title='Distribution of User Ratings')
+        fig_hist.update_layout(margin=dict(t=40,l=20,r=20,b=20))
+        st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.info("User Rating column not available for this chart.")
 
-# -------------------------
-# Distribution by Platform & Genre
-# -------------------------
-st.subheader("Rating distribution by Platform & Genre")
+with chart2:
+    st.subheader("Games per Year")
+    count_by_year = df_filtered.groupby('Release Year').size().reset_index(name='count')
+    if log_scale:
+        fig_line = px.line(count_by_year, x='Release Year', y='count', markers=True, title='Games released per year (log scale)')
+        fig_line.update_yaxes(type='log')
+    else:
+        fig_line = px.bar(count_by_year, x='Release Year', y='count', title='Games released per year')
+    fig_line.update_layout(margin=dict(t=40,l=20,r=20,b=20))
+    st.plotly_chart(fig_line, use_container_width=True)
 
-col_a, col_b = st.columns(2)
+st.markdown("---")
 
-with col_a:
-    fig_box = px.box(filtered, x="Platform", y="User Rating", color="Platform",
-                     points="all", hover_data=["Game Name", "Genre", "Release Year"])
-    fig_box.update_layout(template="plotly_white", showlegend=False, height=520)
-    st.plotly_chart(fig_box, use_container_width=True)
+# -------------------- Charts: middle row --------------------
+mid1, mid2 = st.columns([1,1])
 
-with col_b:
-    fig_violin = px.violin(filtered, x="Genre", y="User Rating", color="Genre", box=True, points="all",
-                           hover_data=["Game Name", "Platform", "Release Year"])
-    fig_violin.update_layout(template="plotly_white", showlegend=False, height=520)
-    st.plotly_chart(fig_violin, use_container_width=True)
+with mid1:
+    st.subheader("Rating vs Release Year (scatter)")
+    if 'User Rating' in df_filtered.columns:
+        # jitter release year slightly for better spread
+        df_plot = df_filtered.copy()
+        df_plot['year_jitter'] = df_plot['Release Year'] + np.random.normal(0, 0.18, size=len(df_plot))
+        color_col = 'Genre' if 'Genre' in df_plot.columns else None
+        fig_scatter = px.scatter(df_plot, x='year_jitter', y='User Rating', color=color_col, hover_data=['Game Name','Platform','Release Year'], labels={'year_jitter':'Release Year'}, title='User Rating by Release Year')
+        fig_scatter.update_layout(showlegend=True, margin=dict(t=40,l=20,r=20,b=20))
+        st.plotly_chart(fig_scatter, use_container_width=True)
+    else:
+        st.info("User Rating column not available for this chart.")
 
-# -------------------------
-# Yearly trend: avg rating by year
-# -------------------------
-st.subheader("Average User Rating by Release Year")
+with mid2:
+    st.subheader("Top genres & platforms")
+    cols_to_count = []
+    if 'Genre' in df_filtered.columns:
+        top_genres = df_filtered['Genre'].value_counts().nlargest(show_top_k).reset_index()
+        top_genres.columns = ['Genre','count']
+        fig_gen = px.bar(top_genres, x='count', y='Genre', orientation='h', title=f'Top {show_top_k} Genres', hover_data=['count'])
+        st.plotly_chart(fig_gen, use_container_width=True)
+    if 'Platform' in df_filtered.columns:
+        top_plats = df_filtered['Platform'].value_counts().nlargest(show_top_k).reset_index()
+        top_plats.columns = ['Platform','count']
+        fig_plat = px.bar(top_plats, x='count', y='Platform', orientation='h', title=f'Top {show_top_k} Platforms', hover_data=['count'])
+        st.plotly_chart(fig_plat, use_container_width=True)
 
-if filtered["Release Year"].notna().any():
-    trend = filtered.dropna(subset=["Release Year"]).groupby("Release Year", as_index=False)["User Rating"].mean()
-    trend = trend.sort_values("Release Year")
-    fig_trend = px.line(trend, x="Release Year", y="User Rating", markers=True,
-                        title="Average rating per year", labels={"User Rating":"Avg Rating"})
-    fig_trend.update_layout(template="plotly_white", height=420)
-    st.plotly_chart(fig_trend, use_container_width=True)
-else:
-    st.info("No Release Year data available for selected filters.")
+st.markdown("---")
 
-# -------------------------
-# Sunburst: Genre -> Platform -> Count
-# -------------------------
-st.subheader("Composition: Genre → Platform → Count")
-sun = filtered.groupby(["Genre","Platform"], as_index=False).size().reset_index(name="Count")
-if not sun.empty:
-    fig_sun = px.sunburst(sun, path=["Genre","Platform"], values="Count", color="Count",
-                         color_continuous_scale="Blues", title="Genre/Platform composition")
-    fig_sun.update_layout(template="plotly_white", height=520)
+# -------------------- Sunburst / Treemap --------------------
+st.subheader("Genre → Platform breakdown (Sunburst)")
+if 'Genre' in df_filtered.columns and 'Platform' in df_filtered.columns:
+    sun = df_filtered.groupby(['Genre','Platform']).size().reset_index(name='count')
+    fig_sun = px.sunburst(sun, path=['Genre','Platform'], values='count', title='Genre → Platform distribution')
     st.plotly_chart(fig_sun, use_container_width=True)
 else:
-    st.info("No composition data to show.")
+    st.info("Need both Genre and Platform columns for Sunburst.")
 
-# -------------------------
-# Similar game recommender (simple)
-# -------------------------
-st.subheader("🧭 Find similar games (by Genre, Platform, Rating)")
-if not filtered.empty:
-    # prepare features: one-hot genre & platform + normalized rating
-    feat = pd.get_dummies(filtered[["Genre","Platform"]].fillna("Unknown"), prefix=["G","P"])
-    feat["Rating"] = (filtered["User Rating"].fillna(filtered["User Rating"].mean()) - filtered["User Rating"].mean()) / (filtered["User Rating"].std() + 1e-9)
-    # fit nearest neighbors
-    nbrs = NearestNeighbors(n_neighbors=6, algorithm="auto").fit(feat.values)
-    # selection
-    choose = st.selectbox("Choose a game to find similar ones", options=filtered["Game Name"].tolist())
-    if choose:
-        idx = filtered[filtered["Game Name"]==choose].index[0]
-        distances, indices = nbrs.kneighbors([feat.loc[idx].values])
-        similar_idxs = indices[0][1:]  # exclude itself
-        sim_df = filtered.iloc[similar_idxs][["Game Name","Platform","Genre","Release Year","User Rating"]]
-        st.write("### Similar games")
-        st.dataframe(sim_df.reset_index(drop=True))
-else:
-    st.info("No data to compute recommendations. Adjust filters.")
-
-# -------------------------
-# Correlation & heatmap (if numeric present beyond rating/year)
-# -------------------------
-st.subheader("📊 Numeric correlations")
-num = filtered.select_dtypes(include=[np.number]).dropna(axis=1, how="all")
-if num.shape[1] >= 2:
-    corr = num.corr()
-    fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale="RdBu_r", title="Correlation matrix")
-    fig_corr.update_layout(template="plotly_white", height=420)
-    st.plotly_chart(fig_corr, use_container_width=True)
-else:
-    st.info("Not enough numeric columns for correlation.")
-
-# -------------------------
-# Data table + download
-# -------------------------
 st.markdown("---")
-st.subheader("📁 Data Explorer & Download")
-st.write("Rows in filtered dataset:", len(filtered))
-st.dataframe(filtered.reset_index(drop=True), use_container_width=True, height=300)
 
-csv = filtered.to_csv(index=False).encode("utf-8-sig")
-st.download_button("Download filtered CSV", data=csv, file_name="games_filtered.csv", mime="text/csv")
+# -------------------- Table & Detail panel --------------------
+st.subheader("Data table & game detail")
+with st.expander("Filtered data (preview)", expanded=True):
+    st.dataframe(df_filtered.reset_index(drop=True))
 
-# -------------------------
-# Footer / credits
-# -------------------------
-st.markdown("---")
-st.markdown("Made with ❤️  — Streamlit + Plotly. Customize further as needed.")
+# Row selection by game name
+game_to_inspect = st.selectbox("Select a game to inspect (by name)", options=['(none)'] + sorted(df_filtered['Game Name'].dropna().unique().tolist()))
+if game_to_inspect and game_to_inspect != '(none)':
+    row = df_filtered[df_filtered['Game Name'] == game_to_inspect].iloc[0]
+    st.markdown(f"**{row.get('Game Name','-')}**  ")
+    st.write(row.to_frame().T)
 
+# Download filtered dataset
+csv = df_filtered.to_csv(index=False)
+st.download_button("Download filtered data as CSV", data=csv, file_name="games_filtered.csv", mime='text/csv')
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("Made with ❤️ by Streamlit + Plotly. Customize on GitHub.")
+
+# -------------------- Footer: tips for customization --------------------
+with st.expander("Developer tips & customization (for GitHub)"):
+    st.markdown(
+        """
+        - To publish: push this file + games_dataset.csv to a GitHub repo and connect the repo to Streamlit Cloud (app will run automatically).
+        - Add additional columns (Sales, Critic Score, Publisher) to unlock more visualizations (maps, correlation matrix, regression lines).
+        - Consider adding caching for heavy transforms and using `st.session_state` for complex interactions.
+        - This app uses Plotly for interactive visuals; you can add `plotly.graph_objects` traces to compose more advanced figures.
+        """
+    )
+
+# End of file
